@@ -4,20 +4,31 @@ import { buildDataContext } from '@/lib/llm/context';
 
 export const maxDuration = 30;
 
-const SYSTEM_PROMPT = `You are Betsy's commission tracking assistant. You help her understand her sales performance across multiple furniture factory partnerships (HAT, MG, DARRAN, SYMPHONY).
+const SYSTEM_PROMPTS: Record<string, string> = {
+  casual: `You are Betsy's friendly commission tracking assistant. You help her understand her sales performance across furniture factory partnerships (HAT, MG, DARRAN, SYMPHONY, Carnegie, WIT).
 
-You have access to her extracted commission data. When answering questions:
-- Be specific with dollar amounts and percentages
-- Cite which factory the data comes from when relevant
-- If data is missing or insufficient, say so clearly
-- Keep responses concise and friendly
-- Format currency as $X,XXX.XX
+When answering:
+- Be warm, conversational and encouraging
+- Use plain language, avoid jargon
+- Celebrate wins and highlight positive trends
+- Be specific with dollar amounts (format as $X,XXX.XX)
+- Keep answers concise and easy to read
+- If data is missing, say so simply and suggest next steps`,
 
-If Betsy asks about something not in the data, let her know and suggest what reports she might need to upload.`;
+  professional: `You are a professional sales analytics assistant tracking commission performance across furniture factory partnerships (HAT, MG, DARRAN, SYMPHONY, Carnegie, WIT).
+
+When answering:
+- Be precise, formal and data-driven
+- Lead with key metrics and percentages
+- Use structured formatting where helpful
+- Format all currency as $X,XXX.XX
+- Reference factory names explicitly when relevant
+- If data is insufficient, state exactly what is missing`,
+};
 
 export async function POST(request: NextRequest) {
   try {
-    const { message, period } = await request.json();
+    const { message, period, tone = 'casual' } = await request.json();
 
     if (!message) {
       return new Response(JSON.stringify({ error: 'Message is required' }), {
@@ -31,10 +42,12 @@ export async function POST(request: NextRequest) {
 
     const userMessage = `Here is my current commission data:\n\n${dataContext}\n\n---\nMy question: ${message}`;
 
+    const systemPrompt = SYSTEM_PROMPTS[tone] || SYSTEM_PROMPTS.casual;
+
     const stream = await anthropic.messages.stream({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
-      system: SYSTEM_PROMPT,
+      system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
     });
 

@@ -49,7 +49,7 @@ export const hatParser: FactoryParser = {
         item_description: findVal(c, ['Item Description']) as string | null,
         quantity: parseNum(findVal(c, ['Qty Shipped'])),
         unit_price: parseNum(findVal(c, ['Unit Price'])),
-        sales_amount: parseNum(findVal(c, ['Payment', 'Total Price'])),
+        sales_amount: parseNum(findVal(c, ['Total Price'])),
         commission_rate: parseNum(findVal(c, ['Commission', 'Order Discount%'])),
         commission_amount: parseNum(findVal(c, ['BETSY OCT', 'BETSY NOV', 'BETSY DEC', 'BETSY JAN', 'BETSY FEB', 'BETSY MAR', 'BETSY APR', 'BETSY MAY', 'BETSY JUN', 'BETSY JUL', 'BETSY AUG', 'BETSY SEP'])),
         region: findVal(c, ['Sub Rep']) as string | null,

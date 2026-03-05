@@ -7,11 +7,34 @@ function parseNum(val: unknown): number | null {
   return isNaN(n) ? null : n;
 }
 
+function parseDate(val: unknown): string | null {
+  if (!val) return null;
+  const s = String(val).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.substring(0, 10);
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+  return null;
+}
+
 // MG report has summary rows ("Customer Total", "Salesperson Total") that we should skip
 function isSummaryRow(cells: Record<string, string | number | null>): boolean {
   const vals = Object.values(cells).map((v) => String(v || '').toLowerCase());
   return vals.some((v) => v.includes('customer total') || v.includes('salesperson total'));
 }
+
+// MG File Column Layout (headers in row 6):
+//   Col1: Salesperson (#)          — e.g. 49
+//   Col2: Salesperson Name         — e.g. "WIT Contract"
+//   Col3: Customer (ID)            — e.g. "AIC010"
+//   Col4: Customer Name            — e.g. "AI CORPORATE INTERIORS LLC"
+//   Col5: End User                 — e.g. "REDSTONE ARSENAL"
+//   Col6: Order Number             — SO/LO/RP/CU prefix
+//   Col7: Invoice Number           — IN prefix
+//   Col8: Comm %                   — e.g. 10
+//   Col9: Split %
+//   Col10: Invoice Date
+//   Col11: Comm Amt                — COMMISSION AMOUNT
+//   Col12: Sales Amt               — SALES AMOUNT
 
 export const mgParser: FactoryParser = {
   name: 'MG Commission Report',
@@ -31,48 +54,44 @@ export const mgParser: FactoryParser = {
       // Skip summary/total rows
       if (isSummaryRow(c)) continue;
 
-      // MG columns (from analysis): Rep#, Split, CustomerID, CustomerName,
-      // SO/LO/PO#, Invoice#, CommRate, (various amount columns)
-      const vals = Object.values(c).filter((v) => v !== null);
-      const keys = Object.keys(c);
-
-      // Find the customer name (usually the longest text field)
-      const customerName = findLongestString(c);
-
-      // Find numeric values for amounts
-      const nums = vals
-        .map((v) => parseNum(v))
-        .filter((n): n is number => n !== null && n > 1);
-
-      // Commission rate is usually 10 (meaning 10%)
-      const rateVal = vals.find((v) => parseNum(v) === 10);
-      const commRate = rateVal ? 0.1 : null;
-
-      // Sales amount is typically the largest number, commission is the second
-      const sortedNums = [...nums].sort((a, b) => b - a);
+      // Map columns by header name
+      const customerName = findVal(c, ['Customer Name']);
+      const customerId = findVal(c, ['Customer']);
+      const endUser = findVal(c, ['End User']);
+      const orderNumber = findVal(c, ['Order Number']);
+      const invoiceNumber = findVal(c, ['Invoice Number']);
+      const invoiceDate = parseDate(findVal(c, ['Invoice Date']));
+      const commPct = parseNum(findVal(c, ['Comm %']));
+      const commAmt = parseNum(findVal(c, ['Comm Amt']));
+      const salesAmt = parseNum(findVal(c, ['Sales Amt']));
+      const salespersonName = findVal(c, ['Salesperson Name']);
+      const splitPct = parseNum(findVal(c, ['Split %']));
 
       entries.push({
         report_id: ctx.reportId,
         factory_id: ctx.factoryId,
         factory_name: 'MG',
-        customer_name: customerName,
-        invoice_number: findInvoiceNumber(c),
-        order_number: findOrderNumber(c),
-        invoice_date: null,
+        customer_name: customerName ? String(customerName) : null,
+        invoice_number: invoiceNumber ? String(invoiceNumber) : null,
+        order_number: orderNumber ? String(orderNumber) : null,
+        invoice_date: invoiceDate,
         order_date: null,
         product_category: null,
-        item_description: null,
+        item_description: endUser ? `End User: ${endUser}` : null,
         quantity: null,
         unit_price: null,
-        sales_amount: sortedNums[0] || null,
-        commission_rate: commRate,
-        commission_amount: sortedNums.length > 1 ? sortedNums[1] : null,
+        sales_amount: salesAmt,
+        commission_rate: commPct != null ? commPct / 100 : null, // 10 -> 0.10
+        commission_amount: commAmt,
         region: null,
-        is_split: false,
+        is_split: splitPct != null && splitPct > 0,
         split_with: null,
         split_amount: null,
-        notes: findVal(c, 'WIT Contract') ? 'WIT Contract' : null,
-        raw_data: c as Record<string, unknown>,
+        notes: salespersonName ? `Contract: ${salespersonName}` : null,
+        raw_data: {
+          ...(c as Record<string, unknown>),
+          customer_id: customerId,
+        },
         row_number: row.rowNumber,
       });
     }
@@ -81,33 +100,24 @@ export const mgParser: FactoryParser = {
   },
 };
 
-function findLongestString(cells: Record<string, string | number | null>): string | null {
-  let longest = '';
-  for (const val of Object.values(cells)) {
-    const s = String(val || '');
-    if (s.length > longest.length && isNaN(Number(s)) && !s.includes('=')) {
-      longest = s;
-    }
-  }
-  return longest || null;
-}
-
-function findVal(cells: Record<string, string | number | null>, search: string): boolean {
-  return Object.values(cells).some((v) => String(v || '').includes(search));
-}
-
-function findInvoiceNumber(cells: Record<string, string | number | null>): string | null {
-  for (const [key, val] of Object.entries(cells)) {
-    const s = String(val || '');
-    if (/^IN\d+/i.test(s) || /invoice/i.test(key)) return s;
-  }
-  return null;
-}
-
-function findOrderNumber(cells: Record<string, string | number | null>): string | null {
-  for (const [key, val] of Object.entries(cells)) {
-    const s = String(val || '');
-    if (/^(SO|LO|RP)\d+/i.test(s)) return s;
+/** Find a value in cells by trying multiple possible header names */
+function findVal(
+  cells: Record<string, string | number | null>,
+  keys: string[]
+): string | number | null {
+  for (const key of keys) {
+    // Exact match first
+    if (key in cells && cells[key] != null) return cells[key];
+    // Case-insensitive match
+    const found = Object.keys(cells).find(
+      (k) => k.toLowerCase().trim() === key.toLowerCase().trim()
+    );
+    if (found && cells[found] != null) return cells[found];
+    // Partial match (header contains the key)
+    const partial = Object.keys(cells).find(
+      (k) => k.toLowerCase().trim().includes(key.toLowerCase().trim())
+    );
+    if (partial && cells[partial] != null) return cells[partial];
   }
   return null;
 }

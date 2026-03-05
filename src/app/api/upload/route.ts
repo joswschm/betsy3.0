@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase/server';
 import { extractHighlightedRowsFromExcel } from '@/lib/extractors/excel';
 import { extractHighlightedRowsFromPDF } from '@/lib/extractors/pdf';
+import { extractCarnegieAgent } from '@/lib/extractors/carnegie';
 import { getParserByKey, autoDetectParser } from '@/lib/parsers/registry';
+import { extractWITSections } from '@/lib/extractors/wit';
+import * as fs from 'fs';
 
 export const maxDuration = 60; // Allow up to 60s for processing
 
 export async function POST(request: NextRequest) {
   try {
+    const supabase = await createClient();
     const formData = await request.formData();
     const file = formData.get('file') as File | null;
     const factoryKey = formData.get('factory') as string | null;
@@ -71,14 +75,26 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      // Extract highlighted rows
+      // Extract rows (highlighted or agent-specific)
       let highlightedRows;
       let stickyNotes: { text: string; rect: number[] }[] = [];
 
-      if (isExcel) {
+      // Write debug info to file (bypasses Next.js console suppression)
+      const debugLine = `factoryKey=${parser.factoryKey} isExcel=${isExcel} isPDF=${isPDF} filename=${filename}\n`;
+      fs.writeFileSync('/tmp/wit_debug.txt', debugLine);
+      process.stdout.write('[UPLOAD] ' + debugLine);
+
+      if (parser.factoryKey === 'carnegie' && isPDF) {
+        highlightedRows = await extractCarnegieAgent(buffer, { agentName: 'BETSY LINDELL' });
+      } else if (parser.factoryKey === 'wit' && isPDF) {
+        fs.appendFileSync('/tmp/wit_debug.txt', 'Entering WIT branch\n');
+        highlightedRows = await extractWITSections(buffer, { sectionCodes: ['5651', '5652'] });
+        fs.appendFileSync('/tmp/wit_debug.txt', `WIT rows returned: ${highlightedRows.length}\n`);
+      } else if (isExcel) {
         const result = await extractHighlightedRowsFromExcel(buffer, parser.sheetNameHint);
         highlightedRows = result.rows;
       } else {
+        fs.appendFileSync('/tmp/wit_debug.txt', 'Entering ELSE branch (not WIT)\n');
         const result = await extractHighlightedRowsFromPDF(buffer);
         highlightedRows = result.rows;
         stickyNotes = result.stickyNotes;
@@ -161,7 +177,6 @@ function extractPeriodFromFilename(filename: string): string | null {
   const upper = filename.toUpperCase();
   for (const month of months) {
     if (upper.includes(month)) {
-      // Try to find a year nearby
       const yearMatch = filename.match(/20\d{2}/);
       const year = yearMatch ? yearMatch[0] : new Date().getFullYear().toString();
       return `${month} ${year}`;

@@ -31,12 +31,14 @@ CREATE TABLE factories (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Seed the 4 known factories
+-- Seed the 6 known factories
 INSERT INTO factories (name, display_name, format) VALUES
   ('hat', 'HAT Commissions', 'excel'),
   ('mg', 'MG (Marble Granite)', 'excel'),
   ('darran', 'DARRAN', 'pdf'),
-  ('symphony', 'SYMPHONY', 'pdf');
+  ('symphony', 'SYMPHONY', 'pdf'),
+  ('carnegie', 'Carnegie', 'pdf'),
+  ('wit', 'WIT (Artopex)', 'pdf');
 
 -- Reports: uploaded file metadata
 CREATE TABLE reports (

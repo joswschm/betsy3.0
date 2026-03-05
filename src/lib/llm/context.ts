@@ -2,20 +2,40 @@ import { supabase } from '@/lib/supabase';
 
 export async function buildDataContext(period?: string): Promise<string> {
   // Get all commission entries, optionally filtered by period
+  // Period formats: "2025-10" (month), "2025" (year), undefined (all-time)
   let query = supabase
     .from('commission_entries')
     .select('*')
     .order('invoice_date', { ascending: false });
 
   if (period) {
-    // Also get the report IDs for the given period
+    // Get reports that match the period
     const { data: reports } = await supabase
       .from('reports')
-      .select('id')
-      .ilike('report_period', `%${period}%`);
+      .select('id, report_period');
+
     if (reports && reports.length > 0) {
-      const reportIds = reports.map((r) => r.id);
-      query = query.in('report_id', reportIds);
+      let filteredReportIds: string[] = [];
+
+      if (period.includes('-')) {
+        // Month format: "2025-10" -> match "OCT 2025"
+        const [year, month] = period.split('-');
+        const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+        const monthName = monthNames[parseInt(month) - 1];
+
+        filteredReportIds = reports
+          .filter(r => r.report_period?.includes(monthName) && r.report_period?.includes(year))
+          .map(r => r.id);
+      } else if (period.length === 4) {
+        // Year format: "2025" -> match any report with "2025"
+        filteredReportIds = reports
+          .filter(r => r.report_period?.includes(period))
+          .map(r => r.id);
+      }
+
+      if (filteredReportIds.length > 0) {
+        query = query.in('report_id', filteredReportIds);
+      }
     }
   }
 

@@ -37,22 +37,34 @@ export const symphonyParser: FactoryParser = {
     const entries: CommissionEntry[] = [];
 
     for (const row of rows) {
-      const vals = Object.values(row.cells).map((v) => String(v || ''));
+      // Concatenate all cell values for pattern matching
+      const fullText = Object.values(row.cells).map((v) => String(v || '')).join(' ');
 
-      // Find customer name (longest non-numeric string)
-      const customer = findCustomerName(vals);
-      const dateStr = vals.find((v) => /\d{1,2}\/\d{1,2}\/\d{2,4}/.test(v)) || null;
-      const invoiceNum = vals.find((v) => /^\d{4,6}$/.test(v)) || null;
+      // Extract using context clues from column labels (like DARRAN approach)
+      // Customer name appears before "Customer" label
+      const customerMatch = fullText.match(/^(.+?)Customer/);
+      const customer = customerMatch ? customerMatch[1].trim() : null;
 
-      // Find amounts
-      const amounts = vals
-        .map((v) => parseNum(v))
-        .filter((n): n is number => n !== null && Math.abs(n) > 1);
+      // Date appears before "Date" label
+      const dateMatch = fullText.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})Date/);
+      const dateStr = dateMatch ? dateMatch[1] : null;
+
+      // Invoice number appears before "No."
+      const invoiceMatch = fullText.match(/(\d{4,6})No\./);
+      const invoiceNum = invoiceMatch ? invoiceMatch[1] : null;
+
+      // Ack number appears before "Ack"
+      const ackMatch = fullText.match(/(\d{4,6})Ack/);
+      const ackNum = ackMatch ? ackMatch[1] : null;
+
+      // Extract dollar amounts (must have decimal point)
+      const amountMatches = fullText.match(/[\d,]+\.\d{2}/g) || [];
+      const amounts = amountMatches.map((a) => parseNum(a)).filter((n): n is number => n !== null);
       const sortedAmts = [...amounts].sort((a, b) => b - a);
 
-      // Find percentage (comm rate)
-      const pctStr = vals.find((v) => /^\d{1,3}%$/.test(v));
-      const commRate = pctStr ? parseFloat(pctStr) / 100 : null;
+      // Percentage appears before "Rate" or with % sign
+      const pctMatch = fullText.match(/(\d{1,3})%/) || fullText.match(/(\d{1,3})Rate/);
+      const commRate = pctMatch ? parseFloat(pctMatch[1]) / 100 : null;
 
       // Check for split info from sticky notes
       let isSplit = false;
@@ -80,16 +92,16 @@ export const symphonyParser: FactoryParser = {
         factory_name: 'SYMPHONY',
         customer_name: customer,
         invoice_number: invoiceNum,
-        order_number: null,
+        order_number: ackNum ? `ACK${ackNum}` : null,
         invoice_date: parseDate(dateStr),
         order_date: null,
         product_category: null,
         item_description: null,
         quantity: null,
         unit_price: null,
-        sales_amount: sortedAmts[0] || null,      // Comm Sales (largest amount)
+        sales_amount: sortedAmts[0] || null,      // Comm Sales (largest decimal amount)
         commission_rate: commRate,
-        commission_amount: sortedAmts[1] || null,  // Comm Amt (second largest)
+        commission_amount: sortedAmts[1] || null,  // Comm Amt (smallest decimal amount)
         region: null,
         is_split: isSplit,
         split_with: splitWith,

@@ -5,3 +5,20 @@ node_modules/
 *.tsbuildinfo
 next-env.d.ts
 .DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Temp/debug files
+/tmp/
+*.log
+
+# Test scripts (local only)
+test_*.js
+test_*.mjs
+test_*.ts
+
+# SQL migration files (contain schema — commit intentionally if you want)
+# supabase-migration.sql

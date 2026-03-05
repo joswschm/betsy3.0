@@ -31,36 +31,39 @@ export const darranParser: FactoryParser = {
 
   normalize(rows: HighlightedRow[], ctx): CommissionEntry[] {
     return rows.map((row) => {
-      const vals = Object.values(row.cells).map((v) => String(v || ''));
+      // Concatenate all cell values into one string for pattern matching
+      const fullText = Object.values(row.cells).map((v) => String(v || '')).join(' ');
 
-      // Parse the row values based on expected column order
-      // Typical order: Invoice#, Date, SalesOrder, CustID, Customer, InvAmt, CommAmt, Disc%, Comm%, RepAmt
-      const invoiceNum = vals.find((v) => /^INV\d+/i.test(v)) || vals[0] || null;
-      const dateStr = vals.find((v) => /\d{1,2}\/\d{1,2}\/\d{2,4}/.test(v)) || null;
-      const customer = findLongestString(vals);
+      // Extract specific values using regex .match() to get the actual matched portion
+      const invoiceMatch = fullText.match(/INV\d+/i);
+      const invoiceNum = invoiceMatch ? invoiceMatch[0] : null;
 
-      // Find dollar amounts (values with $ or large numbers)
-      const amounts = vals
-        .map((v) => parseNum(v.replace('$', '')))
-        .filter((n): n is number => n !== null && Math.abs(n) > 1);
+      const dateMatch = fullText.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+      const dateStr = dateMatch ? dateMatch[1] : null;
 
-      // Find percentages
-      const pcts = vals
-        .map((v) => {
-          const m = v.match(/([\d.]+)%/);
-          return m ? parseFloat(m[1]) / 100 : null;
-        })
-        .filter((n): n is number => n !== null);
+      const salesOrderMatch = fullText.match(/SO\d+/i);
+      const salesOrder = salesOrderMatch ? salesOrderMatch[0] : null;
 
-      const salesOrder = vals.find((v) => /^SO\d+/i.test(v)) || null;
+      // Extract customer name (text between cust ID and first dollar sign)
+      // Pattern: after 6-digit number, before first $
+      const customerMatch = fullText.match(/\d{6}\s+([A-Z\s\-&]+?)\s+\$/);
+      const customer = customerMatch ? customerMatch[1].trim() : null;
 
-      // Amounts: typically [Inv Amt, Comm Amt, Rep Amt] in descending order
+      // Extract all dollar amounts
+      const amountMatches = fullText.match(/\$[\d,]+\.?\d*/g) || [];
+      const amounts = amountMatches.map((a) => parseNum(a)).filter((n): n is number => n !== null);
+
+      // Extract percentages
+      const pctMatches = fullText.match(/([\d.]+)%/g) || [];
+      const pcts = pctMatches.map((p) => parseFloat(p) / 100);
+
+      // Amounts in DARRAN: Inv Amt (largest), Comm Amt (2nd), Rep Amt (smallest)
       const sortedAmts = [...amounts].sort((a, b) => b - a);
       const invAmt = sortedAmts[0] || null;
       const commAmt = sortedAmts[1] || null;
-      const repAmt = sortedAmts[sortedAmts.length - 1] || null;
+      const repAmt = sortedAmts[2] || null;
 
-      const commRate = pcts.find((p) => p < 0.2) || null; // Commission rate is typically < 20%
+      const commRate = pcts.find((p) => p < 0.2) || null;
 
       return {
         report_id: ctx.reportId,

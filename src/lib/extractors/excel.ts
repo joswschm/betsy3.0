@@ -41,16 +41,18 @@ export async function extractHighlightedRowsFromExcel(
     throw new Error('No worksheet found in the Excel file');
   }
 
-  // Find the header row (first row with 3+ non-empty cells)
+  // Find the header row (row with the MOST non-empty cells in the first 10 rows)
   let headerRowNum = 1;
   let headers: string[] = [];
+  let maxNonEmpty = 0;
 
   targetSheet.eachRow((row, rowNum) => {
-    if (headers.length > 0) return;
+    if (rowNum > 10) return; // Only check first 10 rows
     const nonEmpty = row.values
       ? (row.values as (ExcelJS.CellValue)[]).filter((v) => v != null && v !== '')
       : [];
-    if (nonEmpty.length >= 3) {
+    if (nonEmpty.length > maxNonEmpty && nonEmpty.length >= 3) {
+      maxNonEmpty = nonEmpty.length;
       headerRowNum = rowNum;
       headers = [];
       row.eachCell({ includeEmpty: true }, (cell, colNum) => {
