@@ -1,273 +1,274 @@
 import type { HighlightedRow } from '@/types/commission';
-import { spawn } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
 
 export interface WITExtractionOptions {
-  sectionCodes: string[];
+  sectionCodes: string[]; // e.g. ["5651", "5652"] for Betsy's AL and TN sections
 }
 
-const PYTHON_EXTRACTOR = `
-import pdfplumber
-import re
-import sys
+interface PDFTextItem {
+  str: string;
+  transform: number[]; // [scaleX, skewX, skewY, scaleY, x, y]
+  width: number;
+}
 
-def parse_european_number(num_str):
-    if not num_str or num_str.strip() == "":
-        return 0.0
-    cleaned = num_str.replace(" ", "").replace(",", ".")
-    try:
-        return float(cleaned)
-    except ValueError:
-        return 0.0
+// Parse European-format numbers: "1 596,80" → 1596.80
+function parseEuropeanNumber(numStr: string): number {
+  if (!numStr || numStr.trim() === '') return 0;
+  const cleaned = numStr.replace(/\s/g, '').replace(',', '.');
+  const result = parseFloat(cleaned);
+  return isNaN(result) ? 0 : result;
+}
 
-def extract_wit_commissions(pdf_path, section_codes):
-    results = []
+// Extract all text lines from a PDF buffer using pdfjs-dist
+async function extractPDFLines(buffer: Buffer): Promise<string[]> {
+  const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const uint8 = new Uint8Array(buffer);
+  const doc = await pdfjsLib.getDocument({ data: uint8, useSystemFonts: true }).promise;
 
-    print(f"[PY] Opening PDF: {pdf_path}", flush=True)
+  const allLines: string[] = [];
 
-    with pdfplumber.open(pdf_path) as pdf:
-        all_text = ""
-        for page in pdf.pages:
-            t = page.extract_text()
-            if t:
-                all_text += t + "\\n"
+  for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+    const page = await doc.getPage(pageNum);
+    const textContent = await page.getTextContent();
+    const items = (textContent.items as PDFTextItem[]).filter(
+      (item) => item.str && item.str.trim() !== ''
+    );
 
-    lines = all_text.split("\\n")
-    print(f"[PY] Total lines from PDF: {len(lines)}", flush=True)
-    print(f"[PY] Total chars from PDF: {len(all_text)}", flush=True)
+    if (items.length === 0) continue;
 
-    current_section = None
-    current_section_code = None
-    current_customer_name = None
-    last_full_row_data = None
+    // Group items into visual lines using y-position with 3pt tolerance
+    // (items on the same printed line can have slightly different y values)
+    type LineGroup = { centerY: number; entries: Array<{ x: number; endX: number; str: string }> };
+    const lineGroups: LineGroup[] = [];
 
-    section_headers_found = []
-    data_lines_matched = 0
+    for (const item of items) {
+      const y = item.transform[5];
+      const x = item.transform[4];
+      const endX = x + item.width;
 
-    i = 0
-    while i < len(lines):
-        line = lines[i].rstrip()
-        i += 1
-        if not line.strip():
-            continue
-        if any(x in line for x in ["US REPS COMMISSIONS PERIOD", "Project Customer P.O."]):
-            continue
+      const existing = lineGroups.find((g) => Math.abs(g.centerY - y) <= 3);
+      if (existing) {
+        existing.entries.push({ x, endX, str: item.str });
+        // Update center toward new y
+        existing.centerY = (existing.centerY + y) / 2;
+      } else {
+        lineGroups.push({ centerY: y, entries: [{ x, endX, str: item.str }] });
+      }
+    }
 
-        section_match = re.match(r"^(\\d{4})\\s+BETSY\\s*&\\s*MELESSA\\s*\\(([A-Z]{2})\\)", line)
-        if section_match:
-            current_section_code = section_match.group(1)
-            current_section = section_match.group(2)
-            section_headers_found.append(f"{current_section_code} ({current_section})")
-            print(f"[PY] Section found: {current_section_code} ({current_section}), in target: {current_section_code in section_codes}", flush=True)
-            if current_section_code not in section_codes:
-                current_section_code = None
-                current_section = None
-            last_full_row_data = None
-            continue
+    // Sort lines top-to-bottom (PDF y=0 is bottom of page, so descending y = top)
+    lineGroups.sort((a, b) => b.centerY - a.centerY);
 
-        if current_section is None:
-            continue
-        if line.strip() in ["Sales rep", "Client"]:
-            continue
+    for (const group of lineGroups) {
+      // Sort items left-to-right within each line
+      group.entries.sort((a, b) => a.x - b.x);
 
-        customer_match = re.match(r"^(\\d{6}(?:-[A-Z]+)?)\\s+([A-Z].*)", line)
-        if customer_match:
-            potential = customer_match.group(2)
-            if not re.match(r"^\\d{4}-\\d{2}-\\d{2}", potential):
-                current_customer_name = potential
-                last_full_row_data = None
-                continue
+      let lineText = '';
+      let lastEndX = -Infinity;
 
-        if any(x in line for x in ["Invoice total", "Customer total", "Group total", "5649 WIT", "5652 WIT"]):
-            continue
-        if re.search(r"\\d+:\\d+:\\d+\\s+\\d+ of \\d+", line):
-            continue
+      for (const entry of group.entries) {
+        if (lineText === '') {
+          lineText = entry.str;
+        } else {
+          const gap = entry.x - lastEndX;
+          // Add a space if there's a gap > 3pt between items (word/column spacing)
+          lineText += (gap > 3 ? ' ' : '') + entry.str;
+        }
+        lastEndX = Math.max(lastEndX, entry.endX);
+      }
 
-        trailing_pattern = r"(\\d+(?:\\s\\d{3})?,\\d+)\\s+(\\d+(?:\\s\\d{3})?,\\d+)\\s+(\\d+,\\d+)\\s+(\\d+,\\d+)\\s+(\\d+,\\d+)\\s*$"
-        trailing_match = re.search(trailing_pattern, line)
-        if not trailing_match:
-            continue
+      if (lineText.trim()) {
+        allLines.push(lineText);
+      }
+    }
+  }
 
-        data_lines_matched += 1
-
-        net_amount = parse_european_number(trailing_match.group(2))
-        comm_rate = parse_european_number(trailing_match.group(4))
-        comm_amount = parse_european_number(trailing_match.group(5))
-
-        if comm_amount == 0.0:
-            continue
-
-        prefix = line[:trailing_match.start()].rstrip()
-        date_pattern = r"\\d{4}-\\d{2}-\\d{2}"
-        dates = re.findall(date_pattern, prefix)
-
-        if len(dates) >= 2:
-            tokens = prefix.split()
-            po_number = tokens[0]
-            invoice_date = dates[0]
-            order_entry_date = dates[1]
-            date1_idx = prefix.find(invoice_date)
-            date2_idx = prefix.find(order_entry_date)
-            between = prefix[date1_idx + len(invoice_date):date2_idx].strip().split()
-            invoice_number = between[0] if len(between) > 0 else ""
-            order_number = between[1] if len(between) > 1 else ""
-            after_date2 = prefix[date2_idx + len(order_entry_date):].strip()
-            after_tokens = after_date2.split()
-            item_code = after_tokens[0] if len(after_tokens) > 0 else ""
-            description = " ".join(after_tokens[1:]) if len(after_tokens) > 1 else ""
-            last_full_row_data = {
-                "customer_name": current_customer_name,
-                "po_number": po_number,
-                "invoice_number": invoice_number,
-                "invoice_date": invoice_date,
-                "order_number": order_number,
-                "item_code": item_code,
-                "description": description,
-            }
-        else:
-            if last_full_row_data is None:
-                continue
-            tokens = prefix.split()
-            last_full_row_data["item_code"] = tokens[0] if len(tokens) > 0 else ""
-            last_full_row_data["description"] = " ".join(tokens[1:]) if len(tokens) > 1 else ""
-
-        if last_full_row_data:
-            results.append({
-                "customer_name": last_full_row_data["customer_name"],
-                "po_number": last_full_row_data["po_number"],
-                "invoice_number": last_full_row_data["invoice_number"],
-                "invoice_date": last_full_row_data["invoice_date"],
-                "order_number": last_full_row_data["order_number"],
-                "item_code": last_full_row_data["item_code"],
-                "description": last_full_row_data["description"],
-                "net_amount": net_amount,
-                "comm_rate": comm_rate,
-                "comm_amount": comm_amount,
-                "state": current_section,
-            })
-
-    print(f"[PY] Section headers found: {section_headers_found}", flush=True)
-    print(f"[PY] Data lines matched trailing pattern: {data_lines_matched}", flush=True)
-    print(f"[PY] Total results: {len(results)}", flush=True)
-    return results
-`;
+  return allLines;
+}
 
 export async function extractWITSections(
   buffer: Buffer,
   options: WITExtractionOptions
 ): Promise<HighlightedRow[]> {
-  const tmpDir = os.tmpdir();
-  const ts = Date.now();
-  const tmpPdfPath = path.join(tmpDir, `wit_${ts}.pdf`);
-  const tmpJsonPath = path.join(tmpDir, `wit_out_${ts}.json`);
-  const runnerPath = path.join(tmpDir, `wit_runner_${ts}.py`);
+  const lines = await extractPDFLines(buffer);
+  const { sectionCodes } = options;
 
-  console.log(`[WIT] Writing PDF (${buffer.length} bytes) to: ${tmpPdfPath}`);
-  fs.writeFileSync(tmpPdfPath, buffer);
+  let currentSection: string | null = null;
+  let currentSectionCode: string | null = null;
+  let currentCustomerName: string | null = null;
 
-  const pythonRunner = `
-${PYTHON_EXTRACTOR}
+  interface RowData {
+    customer_name: string;
+    po_number: string;
+    invoice_number: string;
+    invoice_date: string;
+    order_number: string;
+    item_code: string;
+    description: string;
+  }
+  let lastFullRowData: RowData | null = null;
 
-import json
+  interface WITEntry {
+    customer_name: string | null;
+    po_number: string;
+    invoice_number: string;
+    invoice_date: string;
+    order_number: string;
+    item_code: string;
+    description: string;
+    net_amount: number;
+    comm_rate: number;
+    comm_amount: number;
+    state: string | null;
+  }
+  const results: WITEntry[] = [];
 
-pdf_path = ${JSON.stringify(tmpPdfPath)}
-section_codes = ${JSON.stringify(options.sectionCodes)}
-out_path = ${JSON.stringify(tmpJsonPath)}
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line.trim()) continue;
 
-print(f"[PY] section_codes = {section_codes}", flush=True)
+    // Skip report header lines
+    if (
+      line.includes('US REPS COMMISSIONS PERIOD') ||
+      line.includes('Project Customer P.O.')
+    ) continue;
 
-try:
-    entries = extract_wit_commissions(pdf_path, section_codes)
-    with open(out_path, 'w') as f:
-        json.dump({'success': True, 'entries': entries}, f)
-except Exception as e:
-    import traceback
-    tb = traceback.format_exc()
-    print(f"[PY] EXCEPTION: {e}", flush=True)
-    print(tb, flush=True)
-    with open(out_path, 'w') as f:
-        json.dump({'success': False, 'error': str(e), 'trace': tb}, f)
-`;
-
-  fs.writeFileSync(runnerPath, pythonRunner);
-  console.log(`[WIT] Runner written to: ${runnerPath}`);
-
-  let stdoutData = '';
-  let stderrData = '';
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const python = spawn('python3', [runnerPath]);
-
-      python.stdout.on('data', (data) => {
-        stdoutData += data.toString();
-      });
-
-      python.stderr.on('data', (data) => {
-        stderrData += data.toString();
-      });
-
-      python.on('close', (code) => {
-        if (code !== 0) {
-          reject(new Error(`Python exited with code ${code}`));
-        } else {
-          resolve();
-        }
-      });
-
-      python.on('error', (err) => {
-        reject(new Error(`Failed to spawn python3: ${err.message}`));
-      });
-    });
-
-    // Always log Python output for diagnostics
-    if (stdoutData) console.log('[WIT Python stdout]\n' + stdoutData);
-    if (stderrData) console.log('[WIT Python stderr]\n' + stderrData);
-
-    if (!fs.existsSync(tmpJsonPath)) {
-      throw new Error('WIT extraction produced no output file.');
+    // Match Betsy sections: "5651 BETSY & MELESSA (AL)"
+    const sectionMatch = line.match(/^(\d{4})\s+BETSY\s*&\s*MELESSA\s*\(([A-Z]{2})\)/);
+    if (sectionMatch) {
+      currentSectionCode = sectionMatch[1];
+      currentSection = sectionMatch[2];
+      if (!sectionCodes.includes(currentSectionCode)) {
+        currentSectionCode = null;
+        currentSection = null;
+      }
+      lastFullRowData = null;
+      continue;
     }
 
-    const resultRaw = fs.readFileSync(tmpJsonPath, 'utf-8');
-    console.log('[WIT] Raw JSON result:', resultRaw.slice(0, 500));
-
-    const result = JSON.parse(resultRaw);
-
-    if (!result.success) {
-      throw new Error(`WIT extraction failed: ${result.error}\n${result.trace || ''}`);
+    // Detect ANY other section header (e.g. "5653 MELESSA REDDITT (MS)") — stop extracting
+    const otherSection = line.match(/^(\d{4})\s+[A-Z].*\([A-Z]{2}\)/);
+    if (otherSection && currentSection !== null) {
+      currentSection = null;
+      currentSectionCode = null;
+      currentCustomerName = null;
+      lastFullRowData = null;
+      continue;
     }
 
-    const rows: HighlightedRow[] = result.entries.map((entry: any, idx: number) => ({
-      rowNumber: idx + 1,
-      cells: {
-        Customer: entry.customer_name || '',
-        PONumber: entry.po_number || '',
-        Invoice: entry.invoice_number || '',
-        InvoiceDate: entry.invoice_date || '',
-        OrderNumber: entry.order_number || '',
-        Item: entry.item_code || '',
-        Description: entry.description || '',
-        NetAmount: entry.net_amount.toFixed(2),
-        CommRate: `${entry.comm_rate.toFixed(2)}%`,
-        Commission: entry.comm_amount.toFixed(2),
-        IsSplit: 'true',
-        SplitWith: 'MELESSA REDDITT',
-        Region: entry.state || '',
-      },
-      highlight: null,
+    if (currentSection === null) continue;
+
+    if (line.trim() === 'Sales rep' || line.trim() === 'Client') continue;
+
+    // Customer header: 6-digit ID (optionally with suffix) followed by a name (not a date)
+    const customerMatch = line.match(/^(\d{6}(?:-[A-Z]+)?)\s+([A-Z].*)/);
+    if (customerMatch) {
+      const potential = customerMatch[2];
+      if (!/^\d{4}-\d{2}-\d{2}/.test(potential)) {
+        currentCustomerName = potential;
+        lastFullRowData = null;
+        continue;
+      }
+    }
+
+    // Skip total / subtotal lines
+    if (
+      ['Invoice total', 'Customer total', 'Group total', '5649 WIT', '5652 WIT'].some((x) =>
+        line.includes(x)
+      )
+    ) continue;
+
+    // Skip page number / timestamp lines (e.g. "14:32:01  1 of 3")
+    if (/\d+:\d+:\d+\s+\d+ of \d+/.test(line)) continue;
+
+    // Each data row ends with 5 European-formatted numbers:
+    //   OrderQty  NetAmount  [something]  CommRate  CommAmount
+    const trailingPattern =
+      /(\d+(?:\s\d{3})?,\d+)\s+(\d+(?:\s\d{3})?,\d+)\s+(\d+,\d+)\s+(\d+,\d+)\s+(\d+,\d+)\s*$/;
+    const trailingMatch = line.match(trailingPattern);
+    if (!trailingMatch) continue;
+
+    const netAmount = parseEuropeanNumber(trailingMatch[2]);
+    const commRate = parseEuropeanNumber(trailingMatch[4]);
+    const commAmount = parseEuropeanNumber(trailingMatch[5]);
+
+    if (commAmount === 0) continue;
+
+    const prefix = line.slice(0, trailingMatch.index!).trimEnd();
+
+    // Find all ISO dates in the prefix
+    const dateMatches = Array.from(prefix.matchAll(/\d{4}-\d{2}-\d{2}/g)).map((m) => ({
+      date: m[0],
+      index: m.index!,
     }));
 
-    console.log(`[WIT] Extracted ${rows.length} rows`);
-    return rows;
-  } catch (err) {
-    if (stdoutData) console.log('[WIT Python stdout]\n' + stdoutData);
-    if (stderrData) console.log('[WIT Python stderr]\n' + stderrData);
-    throw err;
-  } finally {
-    for (const f of [tmpPdfPath, tmpJsonPath, runnerPath]) {
-      try { fs.unlinkSync(f); } catch { /* ignore */ }
+    if (dateMatches.length >= 2) {
+      // Full row: PO  InvoiceDate  InvoiceNum  OrderNum  OrderDate  ItemCode  Description
+      const tokens = prefix.split(/\s+/);
+      const poNumber = tokens[0] ?? '';
+      const invoiceDate = dateMatches[0].date;
+      const orderEntryDate = dateMatches[1].date;
+      const date1End = dateMatches[0].index + invoiceDate.length;
+      const date2Start = dateMatches[1].index;
+      const date2End = date2Start + orderEntryDate.length;
+
+      const between = prefix.slice(date1End, date2Start).trim().split(/\s+/).filter(Boolean);
+      const invoiceNumber = between[0] ?? '';
+      const orderNumber = between[1] ?? '';
+
+      const afterDate2 = prefix.slice(date2End).trim();
+      const afterTokens = afterDate2.split(/\s+/).filter(Boolean);
+      const itemCode = afterTokens[0] ?? '';
+      const description = afterTokens.slice(1).join(' ');
+
+      lastFullRowData = {
+        customer_name: currentCustomerName ?? '',
+        po_number: poNumber,
+        invoice_number: invoiceNumber,
+        invoice_date: invoiceDate,
+        order_number: orderNumber,
+        item_code: itemCode,
+        description,
+      };
+    } else {
+      // Continuation row (same invoice, different line item) — reuse header data
+      if (!lastFullRowData) continue;
+      const tokens = prefix.split(/\s+/).filter(Boolean);
+      lastFullRowData.item_code = tokens[0] ?? '';
+      lastFullRowData.description = tokens.slice(1).join(' ');
+    }
+
+    if (lastFullRowData) {
+      results.push({
+        ...lastFullRowData,
+        customer_name: lastFullRowData.customer_name || null,
+        net_amount: netAmount,
+        comm_rate: commRate,
+        comm_amount: commAmount,
+        state: currentSection,
+      });
     }
   }
+
+  const rows: HighlightedRow[] = results.map((entry, idx) => ({
+    rowNumber: idx + 1,
+    cells: {
+      Customer: entry.customer_name ?? '',
+      PONumber: entry.po_number,
+      Invoice: entry.invoice_number,
+      InvoiceDate: entry.invoice_date,
+      OrderNumber: entry.order_number,
+      Item: entry.item_code,
+      Description: entry.description,
+      NetAmount: entry.net_amount.toFixed(2),
+      CommRate: `${entry.comm_rate.toFixed(2)}%`,
+      Commission: entry.comm_amount.toFixed(2),
+      IsSplit: 'true',
+      SplitWith: 'MELESSA REDDITT',
+      Region: entry.state ?? '',
+    },
+    highlight: null,
+  }));
+
+  console.log(`[WIT] Extracted ${rows.length} rows from sections ${sectionCodes.join(', ')}`);
+  return rows;
 }

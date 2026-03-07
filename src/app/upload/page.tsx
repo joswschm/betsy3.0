@@ -43,7 +43,8 @@ const FACTORY_COLOR_MAP: Record<string, string> = {
   darran:   'bg-violet-100 text-violet-700 border-violet-200',
   symphony: 'bg-orange-100 text-orange-700 border-orange-200',
   carnegie: 'bg-rose-100 text-rose-700 border-rose-200',
-  wit:      'bg-cyan-100 text-cyan-700 border-cyan-200',
+  artopex:  'bg-cyan-100 text-cyan-700 border-cyan-200',
+  wit:      'bg-cyan-100 text-cyan-700 border-cyan-200', // legacy — existing records stored as 'WIT'
   tracy:    'bg-pink-100 text-pink-700 border-pink-200',
   bennett:  'bg-pink-100 text-pink-700 border-pink-200',
 };
@@ -56,17 +57,27 @@ function factoryBadgeColor(name: string): string {
   return 'bg-gray-100 text-gray-600 border-gray-200';
 }
 
+function displayFactoryName(name: string): string {
+  if (!name) return 'Unknown factory';
+  if (name.toLowerCase() === 'wit') return 'Artopex';
+  return name;
+}
+
 // ── Completeness tracking ─────────────────────────────────────────────────────
 const TRACKED_FACTORIES = [
   { key: 'hat',      label: 'HAT' },
   { key: 'mg',       label: 'MG' },
   { key: 'darran',   label: 'DARRAN' },
   { key: 'symphony', label: 'SYMPHONY' },
+  { key: 'carnegie', label: 'CARNEGIE' },
   { key: 'tracy',    label: 'Tracy Bennett' },
+  { key: 'artopex',  label: 'Artopex' },
 ];
 
 function getFactoryKey(name: string): string {
   const lower = (name || '').toLowerCase();
+  // WIT reports are now labelled as Artopex
+  if (lower.includes('wit')) return 'artopex';
   for (const f of TRACKED_FACTORIES) {
     if (lower.includes(f.key)) return f.key;
   }
@@ -278,7 +289,7 @@ function MonthlyReportList({ reports, deleting, onDelete, onReclassify }: Monthl
                       </p>
                       <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                         <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold border ${factoryBadgeColor(report.factory_name)}`}>
-                          {report.factory_name || 'Unknown factory'}
+                          {displayFactoryName(report.factory_name)}
                         </span>
                         {report.entry_count === 0 ? (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-amber-50 text-amber-600 border border-amber-200">

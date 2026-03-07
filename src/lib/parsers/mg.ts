@@ -18,8 +18,14 @@ function parseDate(val: unknown): string | null {
 
 // MG report has summary rows ("Customer Total", "Salesperson Total") that we should skip
 function isSummaryRow(cells: Record<string, string | number | null>): boolean {
-  const vals = Object.values(cells).map((v) => String(v || '').toLowerCase());
-  return vals.some((v) => v.includes('customer total') || v.includes('salesperson total'));
+  const vals = Object.values(cells).map((v) => String(v || '').toLowerCase().trim());
+  return vals.some((v) =>
+    v.includes('customer total') ||
+    v.includes('salesperson total') ||
+    v.includes('cust total') ||
+    v.includes('grand total') ||
+    v === 'total'
+  );
 }
 
 // MG File Column Layout (headers in row 6):
@@ -56,10 +62,15 @@ export const mgParser: FactoryParser = {
 
       // Map columns by header name
       const customerName = findVal(c, ['Customer Name']);
+
       const customerId = findVal(c, ['Customer']);
       const endUser = findVal(c, ['End User']);
       const orderNumber = findVal(c, ['Order Number']);
       const invoiceNumber = findVal(c, ['Invoice Number']);
+
+      // Safety net: skip rows with no invoice number (customer total rows have a customer name
+      // but no invoice number, and would otherwise duplicate the preceding sale row)
+      if (!invoiceNumber) continue;
       const invoiceDate = parseDate(findVal(c, ['Invoice Date']));
       const commPct = parseNum(findVal(c, ['Comm %']));
       const commAmt = parseNum(findVal(c, ['Comm Amt']));

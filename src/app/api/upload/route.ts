@@ -5,7 +5,6 @@ import { extractHighlightedRowsFromPDF } from '@/lib/extractors/pdf';
 import { extractCarnegieAgent } from '@/lib/extractors/carnegie';
 import { getParserByKey, autoDetectParser } from '@/lib/parsers/registry';
 import { extractWITSections } from '@/lib/extractors/wit';
-import * as fs from 'fs';
 
 export const maxDuration = 60; // Allow up to 60s for processing
 
@@ -79,22 +78,14 @@ export async function POST(request: NextRequest) {
       let highlightedRows;
       let stickyNotes: { text: string; rect: number[] }[] = [];
 
-      // Write debug info to file (bypasses Next.js console suppression)
-      const debugLine = `factoryKey=${parser.factoryKey} isExcel=${isExcel} isPDF=${isPDF} filename=${filename}\n`;
-      fs.writeFileSync('/tmp/wit_debug.txt', debugLine);
-      process.stdout.write('[UPLOAD] ' + debugLine);
-
       if (parser.factoryKey === 'carnegie' && isPDF) {
         highlightedRows = await extractCarnegieAgent(buffer, { agentName: 'BETSY LINDELL' });
       } else if (parser.factoryKey === 'wit' && isPDF) {
-        fs.appendFileSync('/tmp/wit_debug.txt', 'Entering WIT branch\n');
         highlightedRows = await extractWITSections(buffer, { sectionCodes: ['5651', '5652'] });
-        fs.appendFileSync('/tmp/wit_debug.txt', `WIT rows returned: ${highlightedRows.length}\n`);
       } else if (isExcel) {
         const result = await extractHighlightedRowsFromExcel(buffer, parser.sheetNameHint);
         highlightedRows = result.rows;
       } else {
-        fs.appendFileSync('/tmp/wit_debug.txt', 'Entering ELSE branch (not WIT)\n');
         const result = await extractHighlightedRowsFromPDF(buffer);
         highlightedRows = result.rows;
         stickyNotes = result.stickyNotes;
