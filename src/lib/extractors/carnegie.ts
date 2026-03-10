@@ -4,98 +4,15 @@ export interface CarnegieExtractionOptions {
   agentName: string; // e.g., "BETSY LINDELL"
 }
 
-interface CarnegieEntry {
-  customer_name: string | null;
-  invoice_no: string | null;
-  specifier: string | null;
-  product_code: string | null;
-  project_name: string | null;
-  gross_usd: number;
-  net_usd: number;
-  comm_rate: number;
-  comm_value: number;
-  raw_line: string;
-  is_total: boolean;
-}
-
 function parseNum(s: string): number {
-  const cleaned = s.replace(/,/g, '').replace(/\(/g, '-').replace(/\)/g, '');
+  const cleaned = s.replace(/,/g, '').replace(/\(/g, '-').replace(/\)/g, '').replace(/\$/g, '').trim();
   const n = parseFloat(cleaned);
   return isNaN(n) ? 0 : n;
 }
 
-function parseCarnegieRow(line: string): CarnegieEntry | null {
-  // Fix digit-space-digit artifacts from PDF extraction (e.g. "1 234" → "1234")
-  let cleaned = line.replace(/(\d)\s+(\d)/g, '$1$2');
-  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+type PdfItem = { x: number; y: number; str: string; width: number };
 
-  // Match financial values at end of line:
-  // gross $  net $  rate%  commission $
-  const financialPattern =
-    /([\d,\(\)\.-]+)\s*\$\s+([\d,\(\)\.-]+)\s*\$\s+([\d.]+)%\s+([\d,\(\)\.-]+)\s*\$\s*$/;
-  const match = cleaned.match(financialPattern);
-  if (!match) return null;
-
-  const grossUsd = parseNum(match[1]);
-  const netUsd = parseNum(match[2]);
-  const commRate = parseFloat(match[3]);
-  const commValue = parseNum(match[4]);
-
-  const textPart = cleaned.slice(0, match.index!).trim();
-
-  // Extract invoice number (SI or SN prefix + digits)
-  const invoiceMatch = textPart.match(/(S[IN]\d+)/);
-  const invoiceNo = invoiceMatch ? invoiceMatch[1] : null;
-
-  // Extract product code (e.g. "1234A/56")
-  const productMatch = textPart.match(/(\d{4}[A-Z]?\/\d+)/);
-  const productCode = productMatch ? productMatch[1] : null;
-
-  // Extract customer name (text before invoice number, minus agent header)
-  let customerName: string | null = null;
-  if (invoiceNo) {
-    const textCleaned = textPart.replace(/^114401\s+BETSY LINDELL\s+/, '');
-    const customerMatch = textCleaned.match(/^([A-Z\s&\-.]+?)\s+(?:[A-Z])?S[IN]/);
-    if (customerMatch) customerName = customerMatch[1].trim();
-  }
-
-  // Extract specifier (text between invoice number and product code)
-  let specifier: string | null = null;
-  if (invoiceNo && productCode) {
-    const specMatch = textPart.match(
-      new RegExp(`${invoiceNo}\\s+(.+?)\\s+${productCode.replace('/', '\\/')}`)
-    );
-    if (specMatch) specifier = specMatch[1].trim();
-  }
-
-  // Extract project name (text after product code)
-  let projectName: string | null = null;
-  if (productCode) {
-    const projMatch = textPart.match(
-      new RegExp(`${productCode.replace('/', '\\/')}\\s+(.+?)$`)
-    );
-    if (projMatch) {
-      projectName = projMatch[1].trim();
-      if (projectName === '#N/A') projectName = null;
-    }
-  }
-
-  return {
-    customer_name: customerName,
-    invoice_no: invoiceNo,
-    specifier,
-    product_code: productCode,
-    project_name: projectName,
-    gross_usd: grossUsd,
-    net_usd: netUsd,
-    comm_rate: commRate,
-    comm_value: commValue,
-    raw_line: line,
-    is_total: false,
-  };
-}
-
-async function extractPDFLines(buffer: Buffer): Promise<string[][]> {
+async function extractAllItems(buffer: Buffer): Promise<PdfItem[]> {
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const { join } = await import('path');
   pdfjsLib.GlobalWorkerOptions.workerSrc = `file://${join(process.cwd(), 'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs')}`;
@@ -105,151 +22,213 @@ async function extractPDFLines(buffer: Buffer): Promise<string[][]> {
     useSystemFonts: true,
   }).promise;
 
-  const pages: string[][] = [];
+  const allItems: PdfItem[] = [];
 
   for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
     const page = await doc.getPage(pageNum);
     const textContent = await page.getTextContent();
-
-    type Item = { str: string; transform: number[]; width: number };
-    const items = (textContent.items as Item[]).filter(
+    type RawItem = { str: string; transform: number[]; width: number };
+    const items = (textContent.items as RawItem[]).filter(
       (item) => item.str && item.str.trim() !== ''
     );
-
-    // Group items into visual lines by y-position (3pt tolerance)
-    type LineGroup = {
-      centerY: number;
-      entries: Array<{ x: number; endX: number; str: string }>;
-    };
-    const lineGroups: LineGroup[] = [];
-
     for (const item of items) {
-      const y = item.transform[5];
-      const x = item.transform[4];
-      const endX = x + item.width;
-      const existing = lineGroups.find((g) => Math.abs(g.centerY - y) <= 3);
-      if (existing) {
-        existing.entries.push({ x, endX, str: item.str });
-        existing.centerY = (existing.centerY + y) / 2;
-      } else {
-        lineGroups.push({ centerY: y, entries: [{ x, endX, str: item.str }] });
-      }
+      allItems.push({
+        x: item.transform[4],
+        y: item.transform[5],
+        str: item.str.trim(),
+        width: item.width,
+      });
     }
-
-    lineGroups.sort((a, b) => b.centerY - a.centerY);
-
-    const lines: string[] = [];
-    for (const group of lineGroups) {
-      group.entries.sort((a, b) => a.x - b.x);
-      let lineText = '';
-      let lastEndX = -Infinity;
-      for (const entry of group.entries) {
-        if (lineText === '') {
-          lineText = entry.str;
-        } else {
-          const gap = entry.x - lastEndX;
-          lineText += (gap > 3 ? ' ' : '') + entry.str;
-        }
-        lastEndX = Math.max(lastEndX, entry.endX);
-      }
-      if (lineText.trim()) lines.push(lineText);
-    }
-
-    pages.push(lines);
   }
 
-  return pages;
+  return allItems;
 }
 
 export async function extractCarnegieAgent(
   buffer: Buffer,
   options: CarnegieExtractionOptions
 ): Promise<HighlightedRow[]> {
-  const agentCode = '114401';
-  const agentName = options.agentName.toUpperCase(); // e.g. "BETSY LINDELL"
+  const agentName = options.agentName.toUpperCase();
+  const items = await extractAllItems(buffer);
 
-  const pages = await extractPDFLines(buffer);
-  const allRows: HighlightedRow[] = [];
+  // Carnegie PDFs use a TRANSPOSED table layout:
+  //   x-coordinate = column index  (corresponds to invoice row number in the report)
+  //   y-coordinate = row index     (corresponds to field type: Customer, Invoice#, etc.)
+  //
+  // Each agent's section spans a contiguous range of x-positions.
+  // Calibrated y-ranges (from Carnegie Oct PDF debug analysis):
+  //   Agent#:       y ≈ 142.8
+  //   Total label:  y ≈ 156.6
+  //   Agent Name:   y ≈ 160.4
+  //   Customer:     y ≈ 241.8
+  //   Invoice#:     y ≈ 276.2
+  //   Specifier:    y ≈ 382.3
+  //   ProductCode:  y ≈ 514.7
+  //   Net USD:      y ≈ 648–653  (varies slightly per row)
+  //   Comm Value:   y ≈ 652–658  (varies slightly per row)
+  //   Comm Rate:    y ≈ 678–681
 
-  for (const lines of pages) {
-    let inAgentSection = false;
-    let currentCustomer: string | null = null;
-    let currentInvoice: string | null = null;
+  // --- Step 1: Locate agent's x-range ---
+  const agentNameItem = items.find(
+    (item) =>
+      item.str.toUpperCase().replace(/\s+/g, ' ').includes(agentName) &&
+      !item.str.toUpperCase().includes('TOTAL')
+  );
 
-    for (const line of lines) {
-      const upper = line.toUpperCase();
+  if (!agentNameItem) {
+    console.log(`[Carnegie] Agent "${agentName}" not found in PDF`);
+    return [];
+  }
 
-      // Start of agent section
-      if (
-        upper.includes(agentCode) &&
-        upper.includes(agentName) &&
-        !upper.includes('TOTAL')
-      ) {
-        inAgentSection = true;
-        // Fall through — the header line may also contain data
-      }
+  const agentStartX = agentNameItem.x;
 
-      // End of agent section
-      if (inAgentSection && upper.includes(`${agentName} TOTAL`)) {
-        const totalEntry = parseCarnegieRow(line);
-        if (totalEntry) {
-          totalEntry.is_total = true;
-          allRows.push({
-            rowNumber: allRows.length + 1,
-            cells: {
-              Col1: totalEntry.raw_line,
-              Customer: 'TOTAL',
-              Invoice: '',
-              Specifier: '',
-              ProductCode: '',
-              ProjectName: '',
-              NetSales: totalEntry.net_usd.toFixed(2),
-              CommRate: '',
-              Commission: totalEntry.comm_value.toFixed(2),
-            },
-          });
-        }
-        break;
-      }
+  // Find the total marker (e.g. "BETSY LINDELL Total") – it's to the right of the start
+  const totalItem = items.find(
+    (item) =>
+      item.str.toUpperCase().replace(/\s+/g, ' ').includes(agentName) &&
+      item.str.toUpperCase().includes('TOTAL') &&
+      item.x > agentStartX
+  );
 
-      if (!inAgentSection || !line.trim()) continue;
+  if (!totalItem) {
+    console.log(`[Carnegie] Total marker for "${agentName}" not found`);
+    return [];
+  }
 
-      const entry = parseCarnegieRow(line);
-      if (!entry) continue;
+  const agentEndX = totalItem.x;
+  console.log(
+    `[Carnegie] ${agentName}: x ${agentStartX.toFixed(1)} → ${agentEndX.toFixed(1)}`
+  );
 
-      // Skip $0 commission rows
-      if (entry.comm_value === 0) continue;
+  // --- Step 2: Group items into row buckets by x-position ---
+  // Row spacing is ~5.3pt; use half-spacing as bucket tolerance
+  const X_TOL = 2.7;
 
-      // Carry forward customer/invoice for continuation rows
-      if (entry.customer_name) {
-        currentCustomer = entry.customer_name;
-      } else if (currentCustomer) {
-        entry.customer_name = currentCustomer;
-      }
+  type RowBucket = { centerX: number; items: PdfItem[] };
+  const rowBuckets: RowBucket[] = [];
 
-      if (entry.invoice_no) {
-        currentInvoice = entry.invoice_no;
-      } else if (currentInvoice) {
-        entry.invoice_no = currentInvoice;
-      }
+  const scopedItems = items.filter(
+    (item) => item.x >= agentStartX - X_TOL && item.x <= agentEndX + X_TOL
+  );
 
-      allRows.push({
-        rowNumber: allRows.length + 1,
-        cells: {
-          Col1: entry.raw_line,
-          Customer: entry.customer_name ?? '',
-          Invoice: entry.invoice_no ?? '',
-          Specifier: entry.specifier ?? '',
-          ProductCode: entry.product_code ?? '',
-          ProjectName: entry.project_name ?? '',
-          NetSales: entry.net_usd.toFixed(2),
-          CommRate: `${entry.comm_rate}%`,
-          Commission: entry.comm_value.toFixed(2),
-        },
-      });
+  for (const item of scopedItems) {
+    const bucket = rowBuckets.find((b) => Math.abs(b.centerX - item.x) <= X_TOL);
+    if (bucket) {
+      bucket.items.push(item);
+    } else {
+      rowBuckets.push({ centerX: item.x, items: [item] });
     }
   }
 
-  console.log(`[Carnegie] Extracted ${allRows.length} rows from ${agentName} section`);
+  rowBuckets.sort((a, b) => a.centerX - b.centerX);
+
+  // --- Step 3: Field y-ranges ---
+  const Y = {
+    customer:    { min: 233, max: 251 },
+    invoice:     { min: 268, max: 285 },
+    specifier:   { min: 370, max: 395 },
+    productCode: { min: 503, max: 527 },
+    financial:   { min: 641, max: 671 },  // covers both Net USD and Comm Value
+    commRate:    { min: 673, max: 688 },
+  };
+
+  function inRange(item: PdfItem, min: number, max: number): boolean {
+    return item.y >= min && item.y <= max;
+  }
+
+  function getField(bi: PdfItem[], min: number, max: number): string {
+    return bi
+      .filter((i) => inRange(i, min, max))
+      .sort((a, b) => a.x - b.x)
+      .map((i) => i.str)
+      .join(' ')
+      .trim();
+  }
+
+  // --- Step 4: Extract data from each row bucket ---
+  const allRows: HighlightedRow[] = [];
+
+  for (const { centerX, items: bi } of rowBuckets) {
+    // Skip the agent header row (contains agent name text but no financial data)
+    if (Math.abs(centerX - agentStartX) <= X_TOL) continue;
+    // Skip the total row
+    if (Math.abs(centerX - agentEndX) <= X_TOL) continue;
+    // Skip any bucket containing a "TOTAL" label
+    if (bi.some((i) => i.str.toUpperCase().includes('TOTAL'))) continue;
+
+    // Comm rate is the most reliable indicator that this is a real data row
+    const commRateRaw = getField(bi, Y.commRate.min, Y.commRate.max)
+      .replace(/%/g, '')
+      .trim();
+    const commRate = parseFloat(commRateRaw);
+    if (isNaN(commRate) || commRate <= 0) continue;
+
+    // Financial items (Net USD and Comm Value are close in y but distinct per row)
+    const financialItems = bi
+      .filter((i) => inRange(i, Y.financial.min, Y.financial.max))
+      .map((i) => ({ y: i.y, val: parseNum(i.str) }))
+      .filter((i) => i.val !== 0);
+
+    let netUsd = 0;
+    let commValue = 0;
+
+    if (financialItems.length >= 2) {
+      // Sort by absolute value descending: Net USD is the larger number,
+      // Comm Value is smaller (≈ net * rate/100).
+      // Validate with the commission rate relationship.
+      const sorted = [...financialItems].sort(
+        (a, b) => Math.abs(b.val) - Math.abs(a.val)
+      );
+      const candidate_net = sorted[0].val;
+      const candidate_comm = sorted[sorted.length - 1].val;
+      const expectedComm = candidate_net * commRate / 100;
+      const tolerance = Math.max(Math.abs(expectedComm) * 0.15, 1);
+
+      if (Math.abs(candidate_comm - expectedComm) <= tolerance) {
+        netUsd = candidate_net;
+        commValue = candidate_comm;
+      } else {
+        // Fallback: lower y = Net USD, higher y = Comm Value
+        const byY = [...financialItems].sort((a, b) => a.y - b.y);
+        netUsd = byY[0].val;
+        commValue = byY[byY.length - 1].val;
+      }
+    } else if (financialItems.length === 1) {
+      const v = financialItems[0].val;
+      const y = financialItems[0].y;
+      // Single value: if y < 655 assume it's Net USD; otherwise Comm Value
+      if (y < 655) {
+        netUsd = v;
+        commValue = v * commRate / 100;
+      } else {
+        commValue = v;
+        netUsd = commRate > 0 ? v / (commRate / 100) : 0;
+      }
+    }
+
+    if (commValue === 0) continue;
+
+    const customer    = getField(bi, Y.customer.min,    Y.customer.max);
+    const invoice     = getField(bi, Y.invoice.min,     Y.invoice.max);
+    const specifier   = getField(bi, Y.specifier.min,   Y.specifier.max);
+    const productCode = getField(bi, Y.productCode.min, Y.productCode.max);
+
+    allRows.push({
+      rowNumber: allRows.length + 1,
+      cells: {
+        Col1: invoice || `x=${centerX.toFixed(1)}`,
+        Customer: customer,
+        Invoice: invoice,
+        Specifier: specifier,
+        ProductCode: productCode,
+        ProjectName: '',
+        NetSales: netUsd.toFixed(2),
+        CommRate: `${commRate}%`,
+        Commission: commValue.toFixed(2),
+      },
+    });
+  }
+
+  console.log(`[Carnegie] Extracted ${allRows.length} rows for ${agentName}`);
   return allRows;
 }
