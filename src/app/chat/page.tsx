@@ -28,7 +28,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
-  const [tone, setTone] = useState<'casual' | 'professional'>('professional');
+  const tone = 'professional';
   const [scope, setScope] = useState<ScopeType>('all-time');
   const [availableMonths, setAvailableMonths] = useState<string[]>([]);
   const [monthValue, setMonthValue] = useState('');
@@ -112,18 +112,6 @@ export default function ChatPage() {
         <p className="text-center text-sm text-gray-400">
           Use this date filter to get answers about more specific data
         </p>
-
-        {/* Tone selector */}
-        <div className="flex justify-center gap-2">
-          {(['casual', 'professional'] as const).map((t) => (
-            <button key={t} onClick={() => setTone(t)}
-              className={`px-5 py-2.5 rounded-xl text-sm font-medium transition-colors ${
-                tone === t ? 'bg-gray-900 text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}>
-              {t === 'casual' ? 'Casual' : 'Professional'}
-            </button>
-          ))}
-        </div>
 
         {/* Scope buttons */}
         <div className="flex justify-center gap-2 flex-wrap">
