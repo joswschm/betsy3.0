@@ -238,7 +238,6 @@ except Exception as e:
           CommRate: entry.is_total ? '' : `${entry.comm_rate}%`,
           Commission: entry.comm_value.toFixed(2),
         },
-        highlight: null,
       };
 
       allRows.push(row);

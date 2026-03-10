@@ -38,7 +38,9 @@ export async function extractHighlightedRowsFromPDF(
     const highlights = annotations.filter((a) => {
       if (a.subtype !== 'Highlight') return false;
       if (!a.color || a.color.length < 3) return false;
-      const [r, g, b] = a.color;
+      const r = a.color[0];
+      const g = a.color[1];
+      const b = a.color[2];
       // Yellow: high R, high G, low B (values 0-255 or 0-1 depending on PDF)
       const rNorm = r > 1 ? r / 255 : r;
       const gNorm = g > 1 ? g / 255 : g;

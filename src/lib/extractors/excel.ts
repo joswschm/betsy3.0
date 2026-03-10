@@ -19,7 +19,8 @@ export async function extractHighlightedRowsFromExcel(
   sheetNameHint?: string
 ): Promise<{ headers: string[]; rows: HighlightedRow[]; sheetName: string }> {
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(buffer);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await workbook.xlsx.load(buffer as any);
 
   // Find the right sheet: use hint, or pick the largest sheet with data
   let targetSheet: ExcelJS.Worksheet | undefined;
