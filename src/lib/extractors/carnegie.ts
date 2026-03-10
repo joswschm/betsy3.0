@@ -97,8 +97,8 @@ function parseCarnegieRow(line: string): CarnegieEntry | null {
 
 async function extractPDFLines(buffer: Buffer): Promise<string[][]> {
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  // Disable worker for server-side / serverless use
-  pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+  const { join } = await import('path');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `file://${join(process.cwd(), 'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs')}`;
 
   const doc = await pdfjsLib.getDocument({
     data: new Uint8Array(buffer),
