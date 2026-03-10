@@ -2,39 +2,47 @@ import { supabase } from '@/lib/supabase';
 
 export async function buildDataContext(period?: string): Promise<string> {
   // Get all commission entries, optionally filtered by period
-  // Period formats: "2025-10" (month), "2025" (year), undefined (all-time)
+  // Period formats: "2025-01-01|2025-01-31" (custom range), "2025-10" (month), "2025" (year), undefined (all-time)
   let query = supabase
     .from('commission_entries')
     .select('*')
     .order('invoice_date', { ascending: false });
 
   if (period) {
-    // Get reports that match the period
-    const { data: reports } = await supabase
-      .from('reports')
-      .select('id, report_period');
-
-    if (reports && reports.length > 0) {
-      let filteredReportIds: string[] = [];
-
-      if (period.includes('-')) {
-        // Month format: "2025-10" -> match "OCT 2025"
-        const [year, month] = period.split('-');
-        const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-        const monthName = monthNames[parseInt(month) - 1];
-
-        filteredReportIds = reports
-          .filter(r => r.report_period?.includes(monthName) && r.report_period?.includes(year))
-          .map(r => r.id);
-      } else if (period.length === 4) {
-        // Year format: "2025" -> match any report with "2025"
-        filteredReportIds = reports
-          .filter(r => r.report_period?.includes(period))
-          .map(r => r.id);
+    if (period.includes('|')) {
+      // Custom date range: "2025-01-01|2025-01-31" -> filter by invoice_date
+      const [start, end] = period.split('|').map(s => s.trim());
+      if (start && end) {
+        query = query.gte('invoice_date', start).lte('invoice_date', end);
       }
+    } else {
+      // Get reports that match the period (month or year)
+      const { data: reports } = await supabase
+        .from('reports')
+        .select('id, report_period');
 
-      if (filteredReportIds.length > 0) {
-        query = query.in('report_id', filteredReportIds);
+      if (reports && reports.length > 0) {
+        let filteredReportIds: string[] = [];
+
+        if (period.includes('-') && period.length === 7) {
+          // Month format: "2025-10" -> match "OCT 2025"
+          const [year, month] = period.split('-');
+          const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+          const monthName = monthNames[parseInt(month, 10) - 1];
+
+          filteredReportIds = reports
+            .filter(r => r.report_period?.includes(monthName) && r.report_period?.includes(year))
+            .map(r => r.id);
+        } else if (period.length === 4 && /^\d{4}$/.test(period)) {
+          // Year format: "2025" -> match any report with "2025"
+          filteredReportIds = reports
+            .filter(r => r.report_period?.includes(period))
+            .map(r => r.id);
+        }
+
+        if (filteredReportIds.length > 0) {
+          query = query.in('report_id', filteredReportIds);
+        }
       }
     }
   }
