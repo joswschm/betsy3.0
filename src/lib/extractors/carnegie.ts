@@ -95,6 +95,68 @@ function parseCarnegieRow(line: string): CarnegieEntry | null {
   };
 }
 
+/**
+ * Group PDF text items into lines by a given axis, then concatenate items
+ * along the other axis to form readable strings.
+ *
+ * @param axis  'y' = standard (group by y, read left-to-right)
+ *              'x' = rotated  (group by x, read top-to-bottom by y)
+ */
+function groupItemsIntoLines(
+  items: Array<{ str: string; transform: number[]; width: number }>,
+  axis: 'y' | 'x',
+  tolerance: number = 3
+): string[] {
+  type LineGroup = {
+    center: number;
+    entries: Array<{ pos: number; endPos: number; str: string }>;
+  };
+  const lineGroups: LineGroup[] = [];
+
+  for (const item of items) {
+    // groupVal = axis we bucket on; sortVal = axis we read along
+    const groupVal = axis === 'y' ? item.transform[5] : item.transform[4];
+    const sortVal  = axis === 'y' ? item.transform[4] : item.transform[5];
+    const endSort  = sortVal + item.width;
+
+    const existing = lineGroups.find((g) => Math.abs(g.center - groupVal) <= tolerance);
+    if (existing) {
+      existing.entries.push({ pos: sortVal, endPos: endSort, str: item.str });
+      existing.center = (existing.center + groupVal) / 2;
+    } else {
+      lineGroups.push({ center: groupVal, entries: [{ pos: sortVal, endPos: endSort, str: item.str }] });
+    }
+  }
+
+  // Sort groups into reading order:
+  //   y-axis: descending (top of page = high y → first line)
+  //   x-axis: ascending  (left of page = low x → first line)
+  if (axis === 'y') {
+    lineGroups.sort((a, b) => b.center - a.center);
+  } else {
+    lineGroups.sort((a, b) => a.center - b.center);
+  }
+
+  const lines: string[] = [];
+  for (const group of lineGroups) {
+    group.entries.sort((a, b) => a.pos - b.pos);
+    let lineText = '';
+    let lastEnd = -Infinity;
+    for (const entry of group.entries) {
+      if (lineText === '') {
+        lineText = entry.str;
+      } else {
+        const gap = entry.pos - lastEnd;
+        lineText += (gap > 3 ? ' ' : '') + entry.str;
+      }
+      lastEnd = Math.max(lastEnd, entry.endPos);
+    }
+    if (lineText.trim()) lines.push(lineText);
+  }
+
+  return lines;
+}
+
 async function extractPDFLines(buffer: Buffer): Promise<string[][]> {
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const { join } = await import('path');
@@ -116,46 +178,28 @@ async function extractPDFLines(buffer: Buffer): Promise<string[][]> {
       (item) => item.str && item.str.trim() !== ''
     );
 
-    // Group items into visual lines by y-position (3pt tolerance)
-    type LineGroup = {
-      centerY: number;
-      entries: Array<{ x: number; endX: number; str: string }>;
-    };
-    const lineGroups: LineGroup[] = [];
+    // Try standard y-grouping first (works for most PDFs)
+    const yLines = groupItemsIntoLines(items, 'y');
 
-    for (const item of items) {
-      const y = item.transform[5];
-      const x = item.transform[4];
-      const endX = x + item.width;
-      const existing = lineGroups.find((g) => Math.abs(g.centerY - y) <= 3);
-      if (existing) {
-        existing.entries.push({ x, endX, str: item.str });
-        existing.centerY = (existing.centerY + y) / 2;
-      } else {
-        lineGroups.push({ centerY: y, entries: [{ x, endX, str: item.str }] });
-      }
+    // Check if y-grouping produces parseable Carnegie rows.
+    // The financial pattern (gross$ net$ rate% comm$) is a reliable indicator.
+    const financialPattern =
+      /[\d,\(\)\.-]+\s*\$\s+[\d,\(\)\.-]+\s*\$\s+[\d.]+%\s+[\d,\(\)\.-]+\s*\$/;
+    const parseableCount = yLines.filter((line) => financialPattern.test(line)).length;
+
+    if (parseableCount > 0) {
+      // Standard layout — y-grouping worked
+      pages.push(yLines);
+    } else {
+      // Rotated/transposed layout (e.g. Carnegie): each invoice is a vertical
+      // column in the PDF. Group by x-position instead so each column becomes
+      // one text line that parseCarnegieRow can handle.
+      console.log(
+        `[Carnegie] Page ${pageNum}: y-grouping produced 0 parseable rows, switching to x-grouping`
+      );
+      const xLines = groupItemsIntoLines(items, 'x', 2.7);
+      pages.push(xLines);
     }
-
-    lineGroups.sort((a, b) => b.centerY - a.centerY);
-
-    const lines: string[] = [];
-    for (const group of lineGroups) {
-      group.entries.sort((a, b) => a.x - b.x);
-      let lineText = '';
-      let lastEndX = -Infinity;
-      for (const entry of group.entries) {
-        if (lineText === '') {
-          lineText = entry.str;
-        } else {
-          const gap = entry.x - lastEndX;
-          lineText += (gap > 3 ? ' ' : '') + entry.str;
-        }
-        lastEndX = Math.max(lastEndX, entry.endX);
-      }
-      if (lineText.trim()) lines.push(lineText);
-    }
-
-    pages.push(lines);
   }
 
   return pages;
