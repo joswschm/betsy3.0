@@ -25,8 +25,22 @@ function parseNum(s: string): number {
 }
 
 function parseCarnegieRow(line: string): CarnegieEntry | null {
+  let cleaned = line;
+
+  // Strip leading row number from x-grouped pdfjs output (1-3 digits + space).
+  // Agent codes like "114401" are 6 digits, so \d{1,3} won't match them.
+  cleaned = cleaned.replace(/^\d{1,3}\s+/, '');
+
+  // pdfjs puts $ BEFORE numbers ("$ 120.00"), pypdf puts $ AFTER ("120.00 $").
+  // Detect pdfjs format (line ends with a number, not $) and normalize.
+  if (/[\d.]+\s*$/.test(cleaned) && !/\$\s*$/.test(cleaned)) {
+    cleaned = cleaned.replace(/%\$/g, '% $');                          // "8.75%$" → "8.75% $"
+    cleaned = cleaned.replace(/\$\s*([\d,\(\)\.-]+)/g, '$1 $');       // "$ 120.00" → "120.00 $"
+  }
+
   // Fix digit-space-digit artifacts from PDF extraction (e.g. "1 234" → "1234")
-  let cleaned = line.replace(/(\d)\s+(\d)/g, '$1$2');
+  // Must run AFTER $ normalization so dollar signs prevent unwanted number merging.
+  cleaned = cleaned.replace(/(\d)\s+(\d)/g, '$1$2');
   cleaned = cleaned.replace(/\s+/g, ' ').trim();
 
   // Match financial values at end of line:
@@ -159,8 +173,9 @@ function groupItemsIntoLines(
 
 async function extractPDFLines(buffer: Buffer): Promise<string[][]> {
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  const { join } = await import('path');
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `file://${join(process.cwd(), 'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs')}`;
+  // Use bare module specifier so Node's resolver finds the worker in node_modules.
+  // The file:// approach breaks on Vercel where the path isn't in the deployment bundle.
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdfjs-dist/legacy/build/pdf.worker.mjs';
 
   const doc = await pdfjsLib.getDocument({
     data: new Uint8Array(buffer),
