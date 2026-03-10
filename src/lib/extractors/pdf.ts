@@ -21,6 +21,8 @@ export async function extractHighlightedRowsFromPDF(
 ): Promise<{ rows: HighlightedRow[]; stickyNotes: { text: string; rect: number[] }[] }> {
   // Dynamic import for pdfjs-dist (server-side)
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  // Disable worker for server-side / serverless use (no Worker API available)
+  pdfjsLib.GlobalWorkerOptions.workerSrc = '';
 
   const uint8 = new Uint8Array(buffer);
   const doc = await pdfjsLib.getDocument({ data: uint8, useSystemFonts: true }).promise;

@@ -21,6 +21,8 @@ function parseEuropeanNumber(numStr: string): number {
 // Extract all text lines from a PDF buffer using pdfjs-dist
 async function extractPDFLines(buffer: Buffer): Promise<string[]> {
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  // Disable worker for server-side / serverless use (no Worker API available)
+  pdfjsLib.GlobalWorkerOptions.workerSrc = '';
   const uint8 = new Uint8Array(buffer);
   const doc = await pdfjsLib.getDocument({ data: uint8, useSystemFonts: true }).promise;
 
