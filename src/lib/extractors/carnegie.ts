@@ -32,8 +32,9 @@ function parseCarnegieRow(line: string): CarnegieEntry | null {
   cleaned = cleaned.replace(/^\d{1,3}\s+/, '');
 
   // pdfjs puts $ BEFORE numbers ("$ 120.00"), pypdf puts $ AFTER ("120.00 $").
-  // Detect pdfjs format (line ends with a number, not $) and normalize.
-  if (/[\d.]+\s*$/.test(cleaned) && !/\$\s*$/.test(cleaned)) {
+  // Detect pdfjs format and normalize. Lines may end with a digit, ")" for
+  // parenthesized negatives, or "-" for zero-value entries.
+  if (/[\d.)\-]+\s*$/.test(cleaned) && !/\$\s*$/.test(cleaned)) {
     cleaned = cleaned.replace(/%\$/g, '% $');                          // "8.75%$" → "8.75% $"
     cleaned = cleaned.replace(/\$\s*([\d,\(\)\.-]+)/g, '$1 $');       // "$ 120.00" → "120.00 $"
   }
@@ -69,8 +70,14 @@ function parseCarnegieRow(line: string): CarnegieEntry | null {
   let customerName: string | null = null;
   if (invoiceNo) {
     const textCleaned = textPart.replace(/^114401\s+BETSY LINDELL\s+/, '');
-    const customerMatch = textCleaned.match(/^([A-Z\s&\-.]+?)\s+(?:[A-Z])?S[IN]/);
-    if (customerMatch) customerName = customerMatch[1].trim();
+    const customerMatch = textCleaned.match(/^([A-Z\d\s&\-.]+?)\s+(?:[A-Z])?S[IN]/);
+    if (customerMatch) {
+      const candidate = customerMatch[1].trim();
+      // Reject purely numeric "customers" (e.g. "11317" is an agent sub-code, not a name)
+      if (!/^\d+$/.test(candidate)) {
+        customerName = candidate;
+      }
+    }
   }
 
   // Extract specifier (text between invoice number and product code)
@@ -117,7 +124,7 @@ function parseCarnegieRow(line: string): CarnegieEntry | null {
  *              'x' = rotated  (group by x, read top-to-bottom by y)
  */
 function groupItemsIntoLines(
-  items: Array<{ str: string; transform: number[]; width: number }>,
+  items: Array<{ str: string; transform: number[]; width: number; height: number }>,
   axis: 'y' | 'x',
   tolerance: number = 3
 ): string[] {
@@ -131,7 +138,10 @@ function groupItemsIntoLines(
     // groupVal = axis we bucket on; sortVal = axis we read along
     const groupVal = axis === 'y' ? item.transform[5] : item.transform[4];
     const sortVal  = axis === 'y' ? item.transform[4] : item.transform[5];
-    const endSort  = sortVal + item.width;
+    // For y-grouping: items flow horizontally, so use width for end position.
+    // For x-grouping: items flow vertically within a bucket, so use height.
+    const extent   = axis === 'y' ? item.width : (item.height || 6);
+    const endSort  = sortVal + extent;
 
     const existing = lineGroups.find((g) => Math.abs(g.center - groupVal) <= tolerance);
     if (existing) {
@@ -188,7 +198,7 @@ async function extractPDFLines(buffer: Buffer): Promise<string[][]> {
     const page = await doc.getPage(pageNum);
     const textContent = await page.getTextContent();
 
-    type Item = { str: string; transform: number[]; width: number };
+    type Item = { str: string; transform: number[]; width: number; height: number };
     const items = (textContent.items as Item[]).filter(
       (item) => item.str && item.str.trim() !== ''
     );
