@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase/server';
 
 /**
  * GET /api/dashboard/monthly
@@ -25,6 +25,7 @@ import { supabase } from '@/lib/supabase';
  */
 export async function GET(request: NextRequest) {
   try {
+    const supabase = await createClient();
     const selectedMonth = request.nextUrl.searchParams.get('month');
 
     // Get all entries with their report info

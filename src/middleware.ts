@@ -31,7 +31,14 @@ export async function middleware(request: NextRequest) {
   const isLoginPage = request.nextUrl.pathname === '/login';
 
   // Not logged in and not on login page → redirect to login
+  // For API routes, return JSON 401 instead of HTML redirect
   if (!user && !isLoginPage) {
+    if (request.nextUrl.pathname.startsWith('/api/')) {
+      return NextResponse.json(
+        { error: 'Unauthorized — please log in again' },
+        { status: 401 }
+      );
+    }
     const url = request.nextUrl.clone();
     url.pathname = '/login';
     return NextResponse.redirect(url);

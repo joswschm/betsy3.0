@@ -68,7 +68,7 @@ export const witParser: FactoryParser = {
       entries.push({
         report_id: ctx.reportId,
         factory_id: ctx.factoryId,
-        factory_name: 'Artopex',
+        factory_name: 'WIT (Artopex)',
         customer_name: customerName,
         invoice_number: invoiceNumber,
         order_number: item, // Use item code as order number
