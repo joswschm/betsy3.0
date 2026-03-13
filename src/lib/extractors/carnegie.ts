@@ -182,18 +182,12 @@ function groupItemsIntoLines(
 }
 
 async function extractPDFLines(buffer: Buffer): Promise<string[][]> {
-  // Pre-load the worker module into globalThis so pdfjs uses it directly
-  // instead of trying to resolve workerSrc at runtime (which fails on Vercel).
-  // See pdf.mjs line ~17501: globalThis.pdfjsWorker?.WorkerMessageHandler
-  if (!(globalThis as any).pdfjsWorker) {
-    const worker = await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
-    (globalThis as any).pdfjsWorker = worker;
-  }
-  const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  // Use unpdf/pdfjs — a serverless-compatible pdfjs build with the worker
+  // inlined. Same API as pdfjs-dist but works reliably on Vercel.
+  const pdfjsLib = await import('unpdf/pdfjs');
 
   const doc = await pdfjsLib.getDocument({
     data: new Uint8Array(buffer),
-    useSystemFonts: true,
   }).promise;
 
   const pages: string[][] = [];

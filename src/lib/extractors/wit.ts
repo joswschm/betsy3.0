@@ -18,17 +18,13 @@ function parseEuropeanNumber(numStr: string): number {
   return isNaN(result) ? 0 : result;
 }
 
-// Extract all text lines from a PDF buffer using pdfjs-dist
+// Extract all text lines from a PDF buffer using unpdf/pdfjs
 async function extractPDFLines(buffer: Buffer): Promise<string[]> {
-  // Pre-load the worker module into globalThis so pdfjs uses it directly
-  // instead of trying to resolve workerSrc at runtime (which fails on Vercel).
-  if (!(globalThis as any).pdfjsWorker) {
-    const worker = await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
-    (globalThis as any).pdfjsWorker = worker;
-  }
-  const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  // Use unpdf/pdfjs — a serverless-compatible pdfjs build with the worker
+  // inlined. Same API as pdfjs-dist but works reliably on Vercel.
+  const pdfjsLib = await import('unpdf/pdfjs');
   const uint8 = new Uint8Array(buffer);
-  const doc = await pdfjsLib.getDocument({ data: uint8, useSystemFonts: true }).promise;
+  const doc = await pdfjsLib.getDocument({ data: uint8 }).promise;
 
   const allLines: string[] = [];
 
