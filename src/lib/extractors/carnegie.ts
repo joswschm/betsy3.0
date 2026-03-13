@@ -183,9 +183,7 @@ function groupItemsIntoLines(
 
 async function extractPDFLines(buffer: Buffer): Promise<string[][]> {
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  // Use bare module specifier so Node's resolver finds the worker in node_modules.
-  // The file:// approach breaks on Vercel where the path isn't in the deployment bundle.
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdfjs-dist/legacy/build/pdf.worker.mjs';
+  // Don't set workerSrc — pdfjs auto-resolves the worker from its own location.
 
   const doc = await pdfjsLib.getDocument({
     data: new Uint8Array(buffer),
