@@ -20,8 +20,13 @@ function parseEuropeanNumber(numStr: string): number {
 
 // Extract all text lines from a PDF buffer using pdfjs-dist
 async function extractPDFLines(buffer: Buffer): Promise<string[]> {
+  // Pre-load the worker module into globalThis so pdfjs uses it directly
+  // instead of trying to resolve workerSrc at runtime (which fails on Vercel).
+  if (!(globalThis as any).pdfjsWorker) {
+    const worker = await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
+    (globalThis as any).pdfjsWorker = worker;
+  }
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  // Don't set workerSrc — pdfjs auto-resolves the worker from its own location.
   const uint8 = new Uint8Array(buffer);
   const doc = await pdfjsLib.getDocument({ data: uint8, useSystemFonts: true }).promise;
 
