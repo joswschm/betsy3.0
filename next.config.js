@@ -1,7 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // exceljs stays external (native deps); pdfjs-dist is bundled by webpack
-  serverExternalPackages: ['exceljs'],
+  experimental: {
+    // Next.js 14.x uses this key (not top-level serverExternalPackages)
+    serverComponentsExternalPackages: ['exceljs'],
+  },
   webpack: (config) => {
     config.resolve.alias.canvas = false;
     return config;
